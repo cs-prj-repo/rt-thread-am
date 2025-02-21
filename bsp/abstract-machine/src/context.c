@@ -1,80 +1,109 @@
 #include <am.h>
 #include <klib.h>
 #include <rtthread.h>
+// typedef struct Context Context;
+// Context *kcontext(Area kstack, void (*entry)(void *), void *arg);
 
 typedef struct {
-  uintptr_t entry, parameter, exit;
-} ContextArgs;
+    void (*tentry)(void *);   // tentry 函数指针
+    void *parameter;          // 参数
+    void (*texit)(void);      // texit 函数指针
+} context_params_t;
 
-typedef struct {
-  rt_ubase_t from, to;
-  rt_ubase_t backup;
-} SwitchParameter;
- 
 static Context* ev_handler(Event e, Context *c) {
   rt_thread_t current = rt_thread_self();
-  SwitchParameter *sparam = NULL;
-  Context **from = NULL;
-  Context **to = NULL;
-
+  Context** from = NULL;
   switch (e.event) {
     case EVENT_YIELD:
-      sparam = (SwitchParameter *)current->user_data;
-      from = (Context **)sparam->from;
-      to = (Context **)sparam->to;
-
-      if (from)
+      from = (Context**)(((rt_ubase_t*)(current->user_data))[1]);
+      Context** to = (Context**)(((rt_ubase_t*)(current->user_data))[0]);
+      if(from != 0){
         *from = c;
+      }
       c = *to;
-      current->user_data = sparam->backup;
-      break;
-    case EVENT_IRQ_TIMER:
-    case EVENT_IRQ_IODEV:
-      break;
+      break; 
+    case EVENT_IRQ_TIMER: 
+    break;
     default: printf("Unhandled event ID = %d\n", e.event); assert(0);
   }
   return c;
-}
-
-static void rt_exec_wrapper(void *arg) {
-  ContextArgs *args = arg;
-  void (*entry)(void *) = (void *)args->entry;
-  void (*exit)() = (void *)args->exit;
-
-  entry((void *)args->parameter);
-  exit();
 }
 
 void __am_cte_init() {
   cte_init(ev_handler);
 }
 
-void rt_hw_context_switch(rt_ubase_t from, rt_ubase_t to) {
-  rt_thread_t current = rt_thread_self();
-  SwitchParameter sparam = (SwitchParameter){ .from = from, .to = to, .backup = current->user_data };
-  current->user_data = (rt_base_t)&sparam;
-  yield();
-}
-
+// rt_hw_context_switch_to()用于切换到to指向的上下文指针变量所指向的上下文
 void rt_hw_context_switch_to(rt_ubase_t to) {
-  rt_hw_context_switch((rt_ubase_t)NULL, to);
+  // assert(0);
+  rt_thread_t current = rt_thread_self();
+  rt_ubase_t from_to[2] = {to, 0};
+  rt_ubase_t user_data_bnk = current->user_data;
+  current->user_data = (rt_ubase_t)from_to;
+  yield();
+  current->user_data = user_data_bnk;
+}                                                                   
+
+// rt_hw_context_switch()还需要额外将当前上下文的指针写入from指向的上下文指针变量中
+// rt_ubase_t类型其实是unsigned long, to和from都是指向上下文指针变量的指针(二级指针)
+void rt_hw_context_switch(rt_ubase_t from, rt_ubase_t to) {
+  // assert(0);
+  rt_thread_t current = rt_thread_self();
+  rt_ubase_t from_to[2] = {to, from};
+  rt_ubase_t user_data_bnk = current->user_data;
+  current->user_data = (rt_ubase_t)from_to;
+  yield();
+  current->user_data = user_data_bnk;
 }
 
+// 目前RT-Thread的运行过程不会调用它, 因此目前可以忽略它
 void rt_hw_context_switch_interrupt(void *context, rt_ubase_t from, rt_ubase_t to, struct rt_thread *to_thread) {
   assert(0);
 }
 
+void wrapper_func(void *args){
+  // assert(0);
+  void (*tentry)(void *);   // tentry 函数指针
+  // void *parameter;          // 参数
+  void (*texit)(void);      // texit 函数指针
+
+  uintptr_t *args_addr = ((uintptr_t *)args) - 3;
+  tentry = (void(*)(void *))((uintptr_t)(args_addr[2]));
+  texit = (void(*)(void))((uintptr_t)(args_addr[0]));
+  tentry((void *)((uintptr_t)(args_addr[1])));
+  texit();
+  // (void(*)(void *))(args_addr[0])(args_addr[1]);
+  // (void(*)(void))(args_addr[2])();
+  // uintptr_t *stack_end = rt_thread_self()->sp;
+  // // uintptr_t stack_end = (uintptr_t)((Context *)stack_end - 1);
+  // printf("stack_end = 0x%08x\n", *(rt_uint32_t *)stack_end);
+  // *((rt_uint32_t *)--stack_end) = (uintptr_t)tentry;
+  // printf("stack_end = 0x%08x\n", *(rt_uint32_t *)stack_end);
+  // *((rt_uint32_t *)--stack_end) = (uintptr_t)parameter;
+  // printf("stack_end = 0x%08x\n", *(rt_uint32_t *)stack_end);
+  // *((rt_uint32_t *)--stack_end) = (uintptr_t)texit;
+  // printf("stack_end = 0x%08x\n", *(rt_uint32_t *)stack_end);
+  // texit();
+}
+
+// 功能是以stack_addr为栈底创建一个入口为tentry 参数为parameter的上下文
 rt_uint8_t *rt_hw_stack_init(void *tentry, void *parameter, rt_uint8_t *stack_addr, void *texit) {
-  uintptr_t align_addr = ((uintptr_t)stack_addr / sizeof(uintptr_t)) * sizeof(uintptr_t);
-  uintptr_t context_addr = align_addr - sizeof(Context);
-  uintptr_t exec_args_addr = context_addr - sizeof(ContextArgs);
+  // assert(0);
+  uintptr_t stack_end = RT_ALIGN((uintptr_t)stack_addr,sizeof(uintptr_t));
+  uintptr_t stack_start = (uintptr_t)((char*)stack_end - FINSH_THREAD_STACK_SIZE);
+  // printf("stack_start = 0x%08x\n",stack_start);
+  // printf("stack_end = 0x%08x\n",stack_end);
 
-  ContextArgs *args = (ContextArgs *)exec_args_addr;
-  args->exit = (uintptr_t)texit;
-  args->entry = (uintptr_t)tentry;
-  args->parameter = (uintptr_t)parameter;
+  Area area = { (void *)stack_start, (void *)stack_end};
+  Context* con = kcontext(area, wrapper_func, (void *)((Context *)stack_end - 1));
+  
+  uintptr_t *args_addr = ((uintptr_t *)((Context *)stack_end - 1)) - 3;
+  args_addr[0] = ((uintptr_t)texit);
+  args_addr[1] = ((uintptr_t)parameter);
+  args_addr[2] = ((uintptr_t)tentry);
 
-  Context *ct = kcontext((Area) { NULL, (void *)align_addr }, rt_exec_wrapper, args);
-
-  return (rt_uint8_t *)ct;
+  // for(int i = 0; i < 4; i ++){
+  //   printf("stack[%d] = 0x%08x\n", i,args_addr[i]);
+  // }
+  return (rt_uint8_t *)con;
 }
